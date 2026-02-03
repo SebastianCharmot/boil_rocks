@@ -1,3 +1,8 @@
 Pillow>=9.0.0
 numpy
-matplotlib
+# matplotlib  # Used by process.py
+streamlit>=1.28.0
+streamlit-image-coordinates>=0.1.6
+# rembg  # Used by test_rembg.py
+# onnxruntime  # Used by rembg
+# opencv-python  # Used by test_opencv_hsv.py
