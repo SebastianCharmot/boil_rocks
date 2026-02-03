@@ -266,8 +266,17 @@ if not uploaded_images:
 # Color space selection
 color_space = st.selectbox("Choose color space for removal:", ["HSV", "RGB"], index=0)
 
-# Normalize all images to same size (use original as reference)
-base_size = uploaded_images['original'].size
+# Normalize all images to same size (use first available image as reference)
+if 'original' in uploaded_images:
+    base_size = uploaded_images['original'].size
+elif 'treated' in uploaded_images:
+    base_size = uploaded_images['treated'].size
+elif 'boiled' in uploaded_images:
+    base_size = uploaded_images['boiled'].size
+else:
+    st.error("No images uploaded")
+    st.stop()
+
 for key in uploaded_images:
     if uploaded_images[key].size != base_size:
         uploaded_images[key] = uploaded_images[key].resize(base_size, Image.LANCZOS)
@@ -409,7 +418,7 @@ for idx, name in enumerate(image_names):
     
     with preview_cols[idx]:
         st.subheader(f"{name.capitalize()} (Color Removed)")
-        st.image(processed_images[name], use_column_width=False)
+        st.image(processed_images[name])
 
 # Step 3: Compute metrics
 st.header("Step 3: Grayscale Analysis")
@@ -466,7 +475,7 @@ if len(processed_images) == 3 and all(n in processed_images for n in image_names
     comp_3x2 = make_3x2_composite(orig_list, proc_list)
     if comp_3x2:
         st.subheader("3×2 Comparison (Original | Color Removed)")
-        st.image(comp_3x2, use_column_width=False)
+        st.image(comp_3x2)
         
         # Allow download
         buf = io.BytesIO()
@@ -483,7 +492,7 @@ if len(processed_images) == 3 and all(n in processed_images for n in image_names
     comp_3x3 = make_3x3_detailed(orig_list, proc_list, mapped, image_names)
     if comp_3x3:
         st.subheader("3×3 Detailed (Original | Color Removed | Grayscale Value)")
-        st.image(comp_3x3, use_column_width=False)
+        st.image(comp_3x3)
         
         # Allow download
         buf = io.BytesIO()
