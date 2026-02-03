@@ -361,31 +361,32 @@ with st.expander("Advanced Settings"):
         v_threshold = 0  # Not used for RGB
 
 # Manual color adjustment (optional)
-with st.expander("Manually Adjust Colors (Optional)"):
-    if color_space == "HSV":
-        st.write("Fine-tune the selected colors with HSV sliders:")
-    else:
-        st.write("Fine-tune the selected colors with RGB sliders:")
+# with st.expander("Manually Adjust Colors (Optional)"):
+#     if color_space == "HSV":
+#         st.write("Fine-tune the selected colors with HSV sliders:")
+#     else:
+#         st.write("Fine-tune the selected colors with RGB sliders:")
     
-    adjust_cols = st.columns(3)
-    for idx, name in enumerate(image_names):
-        if name not in uploaded_images:
-            continue
+#     adjust_cols = st.columns(3)
+#     for idx, name in enumerate(image_names):
+#         if name not in uploaded_images:
+#             continue
         
-        with adjust_cols[idx]:
-            st.subheader(f"Adjust {name.capitalize()}")
-            current = st.session_state.selected_colors.get(name, (0, 0, 0))
+#         with adjust_cols[idx]:
+#             st.subheader(f"Adjust {name.capitalize()}")
+#             current = st.session_state.selected_colors.get(name, (0, 0, 0))
             
-            if color_space == "HSV":
-                h = st.slider(f"Hue (0-180)", 0, 180, current[0], key=f"adj_h_{name}")
-                s = st.slider(f"Saturation (0-255)", 0, 255, current[1], key=f"adj_s_{name}")
-                v = st.slider(f"Value (0-255)", 0, 255, current[2], key=f"adj_v_{name}")
-                st.session_state.selected_colors[name] = (h, s, v)
-            else:
-                r = st.slider(f"Red (0-255)", 0, 255, current[0], key=f"adj_r_{name}")
-                g = st.slider(f"Green (0-255)", 0, 255, current[1], key=f"adj_g_{name}")
-                b = st.slider(f"Blue (0-255)", 0, 255, current[2], key=f"adj_b_{name}")
-                st.session_state.selected_colors[name] = (r, g, b)
+#             if color_space == "HSV":
+#                 st.write("DEBUG current:", current, type(current))
+#                 h = st.slider(f"Hue (0-180)", 0, 180, current[0], key=f"adj_h_{name}")
+#                 s = st.slider(f"Saturation (0-255)", 0, 255, current[1], key=f"adj_s_{name}")
+#                 v = st.slider(f"Value (0-255)", 0, 255, current[2], key=f"adj_v_{name}")
+#                 st.session_state.selected_colors[name] = (h, s, v)
+#             else:
+#                 r = st.slider(f"Red (0-255)", 0, 255, current[0], key=f"adj_r_{name}")
+#                 g = st.slider(f"Green (0-255)", 0, 255, current[1], key=f"adj_g_{name}")
+#                 b = st.slider(f"Blue (0-255)", 0, 255, current[2], key=f"adj_b_{name}")
+#                 st.session_state.selected_colors[name] = (r, g, b)
 
 # Step 2: Preview color removal
 st.header("Step 2: Preview Color Removal")
