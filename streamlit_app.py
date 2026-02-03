@@ -78,7 +78,9 @@ def compute_hsv_mask(arr: np.ndarray, target_color: Tuple[int, int, int],
     delta = max_val - min_val
     
     v = max_val
-    s = np.where(max_val != 0, delta / max_val, 0)
+    # Suppress divide by zero warning - we handle it with np.where
+    with np.errstate(divide='ignore', invalid='ignore'):
+        s = np.where(max_val != 0, delta / max_val, 0)
     
     h = np.zeros_like(r)
     mask_r = (max_val == r) & (delta != 0)
@@ -387,11 +389,12 @@ for name in image_names:
     if name not in uploaded_images:
         continue
     
-    color = st.session_state.selected_colors[name]
-    if color is None:
+    current_color = st.session_state.selected_colors.get(name)
+    if current_color is None:
         st.warning(f"No color selected for {name}")
         continue
     
+    color = current_color
     img = uploaded_images[name]
     proc_img, mask = remove_color_pixels(img, color, color_space, h_threshold=h_threshold, s_threshold=s_threshold, v_threshold=v_threshold)
     processed_images[name] = proc_img
@@ -406,7 +409,7 @@ for idx, name in enumerate(image_names):
     
     with preview_cols[idx]:
         st.subheader(f"{name.capitalize()} (Color Removed)")
-        st.image(processed_images[name], use_column_width=True)
+        st.image(processed_images[name], use_column_width=False)
 
 # Step 3: Compute metrics
 st.header("Step 3: Grayscale Analysis")
@@ -463,7 +466,7 @@ if len(processed_images) == 3 and all(n in processed_images for n in image_names
     comp_3x2 = make_3x2_composite(orig_list, proc_list)
     if comp_3x2:
         st.subheader("3×2 Comparison (Original | Color Removed)")
-        st.image(comp_3x2, use_column_width=True)
+        st.image(comp_3x2, use_column_width=False)
         
         # Allow download
         buf = io.BytesIO()
@@ -480,7 +483,7 @@ if len(processed_images) == 3 and all(n in processed_images for n in image_names
     comp_3x3 = make_3x3_detailed(orig_list, proc_list, mapped, image_names)
     if comp_3x3:
         st.subheader("3×3 Detailed (Original | Color Removed | Grayscale Value)")
-        st.image(comp_3x3, use_column_width=True)
+        st.image(comp_3x3, use_column_width=False)
         
         # Allow download
         buf = io.BytesIO()
