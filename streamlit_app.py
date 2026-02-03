@@ -263,6 +263,21 @@ if not uploaded_images:
     st.info("Please upload images in the sidebar to get started.")
     st.stop()
 
+# Resize very large images to prevent decompression bomb warning
+# PIL warns when images exceed ~89MP; we'll cap at a reasonable size for processing
+MAX_PIXELS = 50_000_000  # ~50 megapixels
+
+for key in uploaded_images:
+    w, h = uploaded_images[key].size
+    total_pixels = w * h
+    if total_pixels > MAX_PIXELS:
+        # Calculate new size maintaining aspect ratio
+        scale = (MAX_PIXELS / total_pixels) ** 0.5
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+        uploaded_images[key] = uploaded_images[key].resize((new_w, new_h), Image.LANCZOS)
+        st.sidebar.info(f"📌 {key.capitalize()} image resized from {w}×{h} to {new_w}×{new_h} for processing")
+
 # Color space selection
 color_space = st.selectbox("Choose color space for removal:", ["HSV", "RGB"], index=0)
 
@@ -490,21 +505,21 @@ if len(processed_images) == 3 and all(n in processed_images for n in image_names
         )
     
     # Create 3x3 detailed composite
-    comp_3x3 = make_3x3_detailed(orig_list, proc_list, mapped, image_names)
-    if comp_3x3:
-        st.subheader("3×3 Detailed (Original | Color Removed | Grayscale Value)")
-        st.image(comp_3x3)
+    # comp_3x3 = make_3x3_detailed(orig_list, proc_list, mapped, image_names)
+    # if comp_3x3:
+    #     st.subheader("3×3 Detailed (Original | Color Removed | Grayscale Value)")
+    #     st.image(comp_3x3)
         
-        # Allow download
-        buf = io.BytesIO()
-        comp_3x3.save(buf, format='PNG')
-        buf.seek(0)
-        st.download_button(
-            label="Download 3×3 Detailed",
-            data=buf,
-            file_name="detailed_3x3.png",
-            mime="image/png"
-        )
+    #     # Allow download
+    #     buf = io.BytesIO()
+    #     comp_3x3.save(buf, format='PNG')
+    #     buf.seek(0)
+    #     st.download_button(
+    #         label="Download 3×3 Detailed",
+    #         data=buf,
+    #         file_name="detailed_3x3.png",
+    #         mime="image/png"
+    #     )
 
 else:
     st.info("Upload all three images and select colors to see metrics and composites.")
