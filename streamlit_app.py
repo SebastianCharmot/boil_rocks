@@ -177,6 +177,21 @@ def avg_grayscale_where_not_masked(arr: np.ndarray, mask: np.ndarray) -> float:
     return float(lum[valid].mean())
 
 
+def avg_hsv_lightness_where_not_masked(arr: np.ndarray, mask: np.ndarray) -> float:
+    """Compute average HSV lightness (V value) on pixels where mask is False."""
+    r = arr[..., 0].astype(np.float32) / 255.0
+    g = arr[..., 1].astype(np.float32) / 255.0
+    b = arr[..., 2].astype(np.float32) / 255.0
+    
+    # V is the maximum of R, G, B
+    v = np.maximum(np.maximum(r, g), b) * 255.0
+    
+    valid = ~mask
+    if not np.any(valid):
+        return float('nan')
+    return float(v[valid].mean())
+
+
 def make_3x2_composite(orig_imgs: List[Image.Image], proc_imgs: List[Image.Image]) -> Image.Image:
     """Create a 3x2 composite: [original | processed] for each of 3 images."""
     rows = len(orig_imgs)
@@ -245,6 +260,82 @@ def make_3x3_detailed(orig_imgs: List[Image.Image], proc_imgs: List[Image.Image]
     return comp
 
 
+def apply_lighting_adjustment_to_image(img: Image.Image, offset: float) -> Image.Image:
+    """Apply lighting adjustment (brightness shift) to an image."""
+    arr = np.array(img.convert('RGB')).astype(np.int32)
+    
+    # Apply offset to all channels
+    adjusted = arr + int(offset)
+    
+    # Clamp to valid range
+    adjusted = np.clip(adjusted, 0, 255).astype(np.uint8)
+    
+    return Image.fromarray(adjusted, 'RGB')
+
+
+def make_lighting_adjustment_viz(orig_imgs: List[Image.Image], patch_avgs: dict, 
+                                  names: List[str], ref_patch_v: float) -> Image.Image:
+    """Create a side-by-side visualization of original vs lighting-adjusted images."""
+    rows = len(names)
+    if rows == 0:
+        return None
+    
+    w, h = orig_imgs[0].size
+    
+    # Create composite: [Original | Adjusted] for each image
+    comp = Image.new('RGB', (w * 2, h * rows), (255, 255, 255))
+    
+    try:
+        font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", size=max(10, h // 25))
+    except Exception:
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", size=max(10, h // 25))
+        except Exception:
+            font = ImageFont.load_default()
+    
+    for i, (img, name) in enumerate(zip(orig_imgs, names)):
+        patch_v = patch_avgs.get(name, float('nan'))
+        
+        if np.isnan(patch_v) or np.isnan(ref_patch_v):
+            offset = 0
+        else:
+            offset = patch_v - ref_patch_v
+        
+        # Original image
+        comp.paste(img.convert('RGB'), (0, i * h))
+        
+        # Adjusted image
+        adjusted_img = apply_lighting_adjustment_to_image(img, -offset)
+        comp.paste(adjusted_img, (w, i * h))
+        
+        # Add labels
+        draw = ImageDraw.Draw(comp)
+        
+        # Original label
+        label_orig = f"{name.upper()}"
+        try:
+            bbox = draw.textbbox((0, 0), label_orig, font=font)
+            tw = bbox[2] - bbox[0]
+            th = bbox[3] - bbox[1]
+        except Exception:
+            tw, th = len(label_orig) * 6, 10
+        
+        draw.text(((w - tw) / 2, i * h + 8), label_orig, fill=(0, 0, 0), font=font)
+        
+        # Adjusted label with offset info
+        label_adj = f"Adjusted (offset: {-offset:+.1f})"
+        try:
+            bbox = draw.textbbox((0, 0), label_adj, font=font)
+            tw = bbox[2] - bbox[0]
+            th = bbox[3] - bbox[1]
+        except Exception:
+            tw, th = len(label_adj) * 6, 10
+        
+        draw.text((w + (w - tw) / 2, i * h + 8), label_adj, fill=(0, 0, 0), font=font)
+    
+    return comp
+
+
 # Sidebar for image uploads
 st.sidebar.header("Upload Images")
 original_file = st.sidebar.file_uploader("Upload Original Image", type=['jpg', 'jpeg', 'png'])
@@ -296,7 +387,7 @@ for key in uploaded_images:
     if uploaded_images[key].size != base_size:
         uploaded_images[key] = uploaded_images[key].resize(base_size, Image.LANCZOS)
 
-# Initialize session state for color selections
+# Initialize session state for color selections and patches
 if 'selected_colors' not in st.session_state:
     st.session_state.selected_colors = {
         'original': None,
@@ -304,9 +395,16 @@ if 'selected_colors' not in st.session_state:
         'boiled': None
     }
 
+if 'selected_patches' not in st.session_state:
+    st.session_state.selected_patches = {
+        'original': None,
+        'treated': None,
+        'boiled': None
+    }
+
 # Step 1: Color Selection
-st.header("Step 1: Select Color to Remove")
-st.write(f"Click on any pixel in each image to extract and use that color for removal ({color_space} space).")
+st.header("Step 1: Select Patch for Background Color")
+st.write(f"Click and drag to select a rectangular patch in each image. The average color from the patch will be used for removal ({color_space} space).")
 
 cols = st.columns(3)
 image_names = ['original', 'treated', 'boiled']
@@ -323,7 +421,8 @@ for idx, name in enumerate(image_names):
         coords = streamlit_image_coordinates(img, key=f"img_{name}")
         
         if coords is not None:
-            # Extract the color at clicked coordinates
+            # Store the coordinate click (streamlit-image-coordinates returns single clicks)
+            # We'll use it to initialize a patch selection UI
             x, y = int(coords['x']), int(coords['y'])
             rgb_array = np.array(img.convert("RGB"))
             
@@ -331,15 +430,43 @@ for idx, name in enumerate(image_names):
             x = max(0, min(x, rgb_array.shape[1] - 1))
             y = max(0, min(y, rgb_array.shape[0] - 1))
             
-            # Get RGB
-            r, g, b = rgb_array[y, x, :3]
+            # Store the clicked point
+            st.session_state.selected_patches[name] = {
+                'point': (x, y),
+                'clicked': True
+            }
+        
+        # Show patch selection controls
+        patch_info = st.session_state.selected_patches.get(name)
+        if patch_info and patch_info.get('clicked'):
+            st.info(f"✓ Point selected at ({patch_info['point'][0]}, {patch_info['point'][1]})")
+            
+            # Allow user to define patch size around the clicked point
+            patch_size = st.slider(
+                f"Patch size (pixels)", 
+                5, 100, 20, 
+                key=f"patch_size_{name}",
+                help="Radius around clicked point for averaging"
+            )
+            
+            x_click, y_click = patch_info['point']
+            x_min = max(0, x_click - patch_size)
+            x_max = min(rgb_array.shape[1], x_click + patch_size)
+            y_min = max(0, y_click - patch_size)
+            y_max = min(rgb_array.shape[0], y_click + patch_size)
+            
+            # Extract patch and compute average color
+            patch = rgb_array[y_min:y_max, x_min:x_max, :3]
+            avg_r = int(np.mean(patch[..., 0]))
+            avg_g = int(np.mean(patch[..., 1]))
+            avg_b = int(np.mean(patch[..., 2]))
             
             if color_space == "HSV":
-                # Convert RGB to HSV
-                picked_color = rgb_to_hsv(r, g, b)
+                # Convert average RGB to HSV
+                picked_color = rgb_to_hsv(avg_r, avg_g, avg_b)
             else:
-                # Keep as RGB
-                picked_color = (r, g, b)
+                # Keep as average RGB
+                picked_color = (avg_r, avg_g, avg_b)
             
             st.session_state.selected_colors[name] = picked_color
         
@@ -353,14 +480,14 @@ for idx, name in enumerate(image_names):
                 preview_rgb = hsv_to_rgb(h_preview, s_val / 255.0, v_val / 255.0)
                 color_preview = Image.new('RGB', (100, 50), preview_rgb)
                 st.image(color_preview, width=100)
-                st.write(f"Selected: HSV({h_val}, {s_val}, {v_val})")
+                st.write(f"**Selected Patch Avg:** HSV({h_val}, {s_val}, {v_val})")
             else:
                 r_val, g_val, b_val = current_color
                 color_preview = Image.new('RGB', (100, 50), (r_val, g_val, b_val))
                 st.image(color_preview, width=100)
-                st.write(f"Selected: RGB({r_val}, {g_val}, {b_val})")
+                st.write(f"**Selected Patch Avg:** RGB({r_val}, {g_val}, {b_val})")
         else:
-            st.write("Click on the image above to select a color")
+            st.write("👆 Click on the image to select a starting point")
 
 # Advanced settings
 with st.expander("Advanced Settings"):
@@ -440,12 +567,12 @@ for idx, name in enumerate(image_names):
 st.header("Step 3: Grayscale Analysis")
 
 if len(processed_images) == 3 and all(n in processed_images for n in image_names):
-    # Compute average grayscale where not masked
+    # Compute average HSV lightness where not masked
     avgs = {}
     for name in image_names:
-        avgs[name] = avg_grayscale_where_not_masked(rgb_arrays[name], masks[name])
+        avgs[name] = avg_hsv_lightness_where_not_masked(rgb_arrays[name], masks[name])
     
-    st.subheader("Average Grayscale (Luminosity) on Non-Removed Pixels")
+    st.subheader("Average HSV Lightness (V) on Non-Removed Pixels")
     metric_cols = st.columns(3)
     for idx, name in enumerate(image_names):
         with metric_cols[idx]:
@@ -455,30 +582,107 @@ if len(processed_images) == 3 and all(n in processed_images for n in image_names
             else:
                 st.metric(name.capitalize(), f"{val:.1f}")
     
-    # Mapping: original -> 0, treated -> 100
-    mapped = [float('nan')] * 3
-    mapped[0] = 0.0
-    mapped[1] = 100.0
+    # Compute patch HSV lightness for lighting adjustment
+    st.subheader("Average HSV Lightness (V) of Selected Patches")
+    patch_avgs = {}
+    for name in image_names:
+        patch_info = st.session_state.selected_patches.get(name)
+        if patch_info and patch_info.get('clicked'):
+            rgb_array = np.array(uploaded_images[name].convert("RGB"))
+            x_click, y_click = patch_info['point']
+            
+            # Get patch size from session state or use default
+            patch_key = f"patch_size_{name}"
+            if patch_key in st.session_state:
+                patch_size = st.session_state[patch_key]
+            else:
+                patch_size = 20
+            
+            x_min = max(0, x_click - patch_size)
+            x_max = min(rgb_array.shape[1], x_click + patch_size)
+            y_min = max(0, y_click - patch_size)
+            y_max = min(rgb_array.shape[0], y_click + patch_size)
+            
+            patch = rgb_array[y_min:y_max, x_min:x_max, :3]
+            patch_r = np.mean(patch[..., 0]).astype(np.float32) / 255.0
+            patch_g = np.mean(patch[..., 1]).astype(np.float32) / 255.0
+            patch_b = np.mean(patch[..., 2]).astype(np.float32) / 255.0
+            
+            # Compute HSV lightness (V) of patch
+            patch_v = np.maximum(np.maximum(patch_r, patch_g), patch_b) * 255.0
+            patch_avgs[name] = patch_v
+        else:
+            patch_avgs[name] = float('nan')
     
-    orig_val = avgs['original']
-    treated_val = avgs['treated']
-    boiled_val = avgs['boiled']
+    patch_cols = st.columns(3)
+    for idx, name in enumerate(image_names):
+        with patch_cols[idx]:
+            val = patch_avgs[name]
+            if np.isnan(val):
+                st.metric(f"{name.capitalize()} Patch", "N/A")
+            else:
+                st.metric(f"{name.capitalize()} Patch", f"{val:.1f}")
     
-    if np.isnan(orig_val) or np.isnan(treated_val) or np.isnan(boiled_val):
-        mapped[2] = float('nan')
-    elif treated_val == orig_val:
-        mapped[2] = 0.0
+    # Lighting-adjusted HSV lightness values
+    st.subheader("Average HSV Lightness (V) on Non-Removed Pixels - Lighting Adjusted")
+    
+    # Use original patch HSV lightness as reference
+    ref_patch_v = patch_avgs.get('original', float('nan'))
+    
+    adjusted_avgs = {}
+    if not np.isnan(ref_patch_v):
+        # Adjust all values based on patch HSV lightness difference
+        for name in image_names:
+            if not np.isnan(avgs[name]) and not np.isnan(patch_avgs[name]):
+                # Lighting offset: difference between current patch and reference patch
+                offset = patch_avgs[name] - ref_patch_v
+                adjusted_avgs[name] = avgs[name] - offset
+            else:
+                adjusted_avgs[name] = float('nan')
     else:
-        mapped[2] = 100.0 * (boiled_val - orig_val) / (treated_val - orig_val)
+        adjusted_avgs = avgs  # Fallback if no valid reference
     
-    st.subheader("Mapped Values (Original → 0, Treated → 100)")
-    mapped_cols = st.columns(3)
-    for idx, (name, val) in enumerate(zip(image_names, mapped)):
-        with mapped_cols[idx]:
+    adj_cols = st.columns(3)
+    for idx, name in enumerate(image_names):
+        with adj_cols[idx]:
+            val = adjusted_avgs[name]
             if np.isnan(val):
                 st.metric(name.capitalize(), "N/A")
             else:
-                st.metric(name.capitalize(), f"{val:.2f}")
+                st.metric(name.capitalize(), f"{val:.1f}")
+    
+    # Visualize lighting adjustment effect
+    st.subheader("Lighting Adjustment Visualization")
+    orig_list = [uploaded_images[n].convert("RGB") for n in image_names]
+    viz_img = make_lighting_adjustment_viz(orig_list, patch_avgs, image_names, ref_patch_v)
+    if viz_img:
+        st.image(viz_img)
+    
+    # Coat Percentage calculation using the new formula
+    st.subheader("Coat Percentage")
+    
+    orig_val = adjusted_avgs['original']
+    treated_val = adjusted_avgs['treated']
+    boiled_val = adjusted_avgs['boiled']
+    
+    coat_percentage = float('nan')
+    if not np.isnan(orig_val) and not np.isnan(treated_val) and not np.isnan(boiled_val):
+        if orig_val != treated_val:
+            coat_percentage = 100.0 * (1.0 - (boiled_val - treated_val) / orig_val)
+    
+    coat_cols = st.columns(3)
+    for idx, (name, val) in enumerate(zip(['Original', 'Treated', 'Boiled'], [0.0, 100.0, coat_percentage])):
+        with coat_cols[idx]:
+            if np.isnan(val):
+                st.metric(name, "N/A")
+            else:
+                st.metric(name, f"{val:.2f}")
+    
+    # Display the formula
+    st.write("**Formula:**")
+    st.latex(r"Coat\,\% = 100 \times \left(1 - \frac{V_{Boiled} - V_{Treated}}{V_{Original}}\right)")
+    
+    st.caption("Where V = Average HSV Lightness on Non-Removed Pixels (Lighting Adjusted)")
     
     # Step 4: Display composites
     st.header("Step 4: Composite Images")
@@ -523,3 +727,56 @@ if len(processed_images) == 3 and all(n in processed_images for n in image_names
 
 else:
     st.info("Upload all three images and select colors to see metrics and composites.")
+
+# Add process explanation at the end
+st.divider()
+st.header("How the Grayscale Analysis Works")
+
+st.subheader("1. HSV Lightness (V Value)")
+st.write("""
+The analysis uses the **V (Value) component from the HSV color space** instead of traditional grayscale luminosity.
+In HSV:
+- **H (Hue):** The color itself (0-360°)
+- **S (Saturation):** How pure the color is (0-100%)
+- **V (Value):** The **brightness** of the color (0-100%)
+
+The V value is calculated simply as the **maximum of the R, G, and B channels** (after normalizing to 0-1). 
+This gives us a pure brightness measurement independent of color saturation.
+""")
+
+st.subheader("2. Non-Removed Pixels Analysis")
+st.write("""
+After removing the selected color, we measure the average V (brightness) of all remaining pixels. 
+This tells us how bright the treated/boiled rocks are after the coating removal.
+""")
+
+st.subheader("3. Lighting Reference (Patch Selection)")
+st.write("""
+Different images may have been photographed under different lighting conditions. To account for this, 
+we use the **selected patch as a lighting reference**. The patch represents the same background/coating 
+across all three images, so differences in patch brightness indicate lighting differences.
+""")
+
+st.subheader("4. Lighting Adjustment")
+st.write("""
+The lighting offset is calculated as:
+- **Offset = Patch V (current image) - Patch V (original image)**
+
+This offset is then **subtracted from all non-removed pixel values**:
+- **Adjusted V = Raw V - Offset**
+
+This normalization ensures all three images are compared on the same lighting baseline, making the 
+comparison fair and accurate regardless of lighting variations.
+""")
+
+st.subheader("5. Coat Percentage Calculation")
+st.write("""
+The final coat percentage tells us what fraction of the original coating remains on the boiled rock:
+
+$$Coat\\,\\% = 100 \\times \\left(1 - \\frac{V_{Boiled} - V_{Treated}}{V_{Original}}\\right)$$
+
+- **100%** = Boiled surface is as bright as treated (no coating removed)
+- **0%** = Boiled surface is as bright as original untreated rock (all coating removed)
+- **Values between** = Partial coating removal
+""")
+
